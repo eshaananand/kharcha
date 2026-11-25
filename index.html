@@ -161,6 +161,17 @@ nav.tabs .i{font-size:21px;line-height:1.1}
     </div>
 
     <div class="card">
+      <h2>Categories</h2>
+      <div id="catManager"></div>
+      <div class="row" style="margin-top:6px">
+        <input id="newCatEmoji" placeholder="🏷️" maxlength="4" style="width:64px;text-align:center" aria-label="Emoji">
+        <input id="newCatName" placeholder="New category, e.g. Health" maxlength="24">
+      </div>
+      <button class="btn full" style="margin-top:8px" id="newCatAdd">Add category</button>
+      <p class="small muted" style="margin:8px 0 0">Categories you add can be deleted with ✕. Their payments move to Others.</p>
+    </div>
+
+    <div class="card">
       <h2>Backup (CSV)</h2>
       <p class="small muted" style="margin:0 0 4px">Your data lives only on this phone. Export a CSV now and then to keep a backup, or to open in Excel / Google Sheets.</p>
       <div class="btns">
@@ -206,7 +217,7 @@ nav.tabs .i{font-size:21px;line-height:1.1}
 
 <script>
 /* ---------- Setup ---------- */
-const CATS = [
+const DEFAULT_CATS = [
   {id:'Food', e:'🍔', c:'#f59e0b'},
   {id:'Shopping', e:'🛍️', c:'#ec4899'},
   {id:'Travel', e:'🚕', c:'#3b82f6'},
@@ -215,7 +226,8 @@ const CATS = [
   {id:'Rent', e:'🏠', c:'#ef4444'},
   {id:'Others', e:'📦', c:'#6b7280'},
 ];
-const CAT = Object.fromEntries(CATS.map(c => [c.id, c]));
+let CATS = [], CAT = {};   // filled by refreshCats() once storage is loaded
+const PALETTE = ['#0ea5e9','#f97316','#14b8a6','#a855f7','#84cc16','#e11d48','#eab308','#6366f1','#22c55e','#f43f5e'];
 const UNSURE = {id:'Review', e:'❓', c:'#d97706'};
 
 // Shop-name keywords → category. Edit freely.
@@ -235,7 +247,39 @@ const store = {
 };
 let txns = store.get('kh_txns', []);
 let rules = store.get('kh_rules', {});   // shopKey → category (learned from you)
-const save = () => { store.set('kh_txns', txns); store.set('kh_rules', rules); };
+let customCats = store.get('kh_cats', []); // categories you added: [{id, e, c}]
+const save = () => { store.set('kh_txns', txns); store.set('kh_rules', rules); store.set('kh_cats', customCats); };
+
+function refreshCats(){
+  // "Others" always stays last
+  const others = DEFAULT_CATS.find(c => c.id === 'Others');
+  CATS = [...DEFAULT_CATS.filter(c => c !== others), ...customCats, others];
+  CAT = Object.fromEntries(CATS.map(c => [c.id, c]));
+  if (typeof fillCatSelects === 'function') fillCatSelects();
+}
+function addCategory(name, emoji){
+  name = (name || '').trim().replace(/\s+/g, ' ').slice(0, 24);
+  if (!name) return null;
+  name = name.charAt(0).toUpperCase() + name.slice(1);
+  const existing = CATS.find(c => c.id.toLowerCase() === name.toLowerCase());
+  if (existing) return existing.id;
+  customCats.push({id: name, e: (emoji || '').trim() || '🏷️', c: PALETTE[customCats.length % PALETTE.length]});
+  save(); refreshCats();
+  return name;
+}
+function deleteCategory(id){
+  customCats = customCats.filter(c => c.id !== id);
+  txns.forEach(t => { if (t.category === id) t.category = 'Others'; });
+  for (const k in rules) if (rules[k] === id) delete rules[k];
+  save(); refreshCats();
+}
+function askNewCategory(){
+  const name = prompt('New category name (e.g. Health, Gifts, Education):');
+  if (!name || !name.trim()) return null;
+  const emoji = prompt('Pick an emoji for it (optional):', '🏷️');
+  return addCategory(name, emoji);
+}
+refreshCats();
 
 const pad = n => String(n).padStart(2, '0');
 const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
@@ -456,7 +500,7 @@ function renderReview(){
     <div class="small muted">${new Date(x.date + 'T00:00').toLocaleDateString('en-IN', {weekday: 'short', day: 'numeric', month: 'short'})}${x.time ? ' · ' + x.time : ''} · ${esc(x.type)}</div></div>
     <div style="font-weight:800;font-size:19px">${inr(x.amount)}</div></div>
     <div class="small" style="margin-top:8px">Which category is this?</div>
-    <div class="catgrid">${CATS.map(c => `<button data-pick="${c.id}"><span class="e">${c.e}</span>${c.id}</button>`).join('')}<button data-edit="1"><span class="e">✏️</span>Edit</button></div>
+    <div class="catgrid">${CATS.map(c => `<button data-pick="${c.id}"><span class="e">${c.e}</span>${c.id}</button>`).join('')}<button data-new="1"><span class="e">➕</span>New</button><button data-edit="1"><span class="e">✏️</span>Edit</button></div>
     ${x.raw ? `<div class="sms">${esc(x.raw)}</div>` : ''}
   </div>`).join('');
 }
@@ -466,7 +510,7 @@ function render(){
   $('#monthLabel').textContent = new Date(y, m - 1, 1).toLocaleDateString('en-IN', {month: 'short', year: 'numeric'});
   $('#monthnav').style.visibility = (currentView === 'home' || currentView === 'list') ? 'visible' : 'hidden';
   $('#title').textContent = {home: 'Kharcha', list: 'All payments', review: 'Review', add: 'Add & Sync'}[currentView];
-  renderHome(); renderList(); renderReview();
+  renderHome(); renderList(); renderReview(); renderCatManager();
 }
 
 /* ---------- Actions ---------- */
@@ -528,6 +572,10 @@ $('#reviewList').onclick = e => {
   const card = e.target.closest('[data-rid]'); if (!card) return;
   const p = e.target.closest('[data-pick]');
   if (p){ setCategory(card.dataset.rid, p.dataset.pick, true); save(); render(); toast(`Saved as ${p.dataset.pick} — will remember this shop`); }
+  else if (e.target.closest('[data-new]')){
+    const id = askNewCategory(); if (!id) return;
+    setCategory(card.dataset.rid, id, true); save(); render(); toast(`Saved as ${id} — will remember this shop`);
+  }
   else if (e.target.closest('[data-edit]')) openSheet(card.dataset.rid);
 };
 
@@ -557,7 +605,46 @@ $('#syncFile').onchange = async e => {
   $('#syncResult').innerHTML = resultHTML(addFromText(await f.text())); e.target.value = '';
 };
 
-CATS.forEach(c => { $('#mCat').add(new Option(c.e + ' ' + c.id, c.id)); $('#sCat').add(new Option(c.e + ' ' + c.id, c.id)); });
+function fillCatSelects(){
+  for (const sel of [$('#mCat'), $('#sCat')]){
+    const keep = sel.value;
+    sel.innerHTML = '';
+    CATS.forEach(c => sel.add(new Option(c.e + ' ' + c.id, c.id)));
+    sel.add(new Option('➕ New category…', '__new'));
+    if (CAT[keep]) sel.value = keep;
+  }
+}
+fillCatSelects();
+// Picking "➕ New category…" in a dropdown asks for the name, then selects it.
+for (const sel of [$('#mCat'), $('#sCat')]){
+  sel.addEventListener('change', () => {
+    if (sel.value !== '__new') return;
+    const id = askNewCategory();
+    sel.value = id || 'Others';
+    if (id){ render(); toast(`Category “${id}” added`); }
+  });
+}
+function renderCatManager(){
+  $('#catManager').innerHTML = CATS.map(c => {
+    const custom = customCats.some(x => x.id === c.id);
+    return `<span class="chip" style="display:inline-flex;align-items:center;gap:6px;margin:0 6px 6px 0">${c.e} ${esc(c.id)}${custom ? ` <button data-delcat="${esc(c.id)}" aria-label="Delete ${esc(c.id)}" style="border:0;background:none;color:var(--danger);font-size:15px;padding:0 0 0 2px">✕</button>` : ''}</span>`;
+  }).join('');
+}
+$('#catManager').onclick = e => {
+  const b = e.target.closest('[data-delcat]'); if (!b) return;
+  const id = b.dataset.delcat;
+  const n = txns.filter(t => t.category === id).length;
+  if (!confirm(`Delete category “${id}”?${n ? ` Its ${n} payment${n === 1 ? '' : 's'} will move to Others.` : ''}`)) return;
+  deleteCategory(id); render(); toast(`Deleted “${id}”`);
+};
+$('#newCatAdd').onclick = () => {
+  const name = $('#newCatName').value;
+  if (!name.trim()) return toast('Type a category name');
+  const exists = CATS.some(c => c.id.toLowerCase() === name.trim().toLowerCase());
+  const id = addCategory(name, $('#newCatEmoji').value);
+  $('#newCatName').value = ''; $('#newCatEmoji').value = '';
+  render(); toast(exists ? `“${id}” already exists` : `Category “${id}” added`);
+};
 $('#mDate').value = todayISO();
 $('#mAdd').onclick = () => {
   const amount = parseFloat($('#mAmt').value);
@@ -598,7 +685,7 @@ $('#importCsv').onchange = async e => {
     const amount = parseFloat(o.amount); if (!(amount > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(o.date)) continue;
     const id = o.id || 'c' + hash(o.date + amount + o.shop + o.raw);
     if (ids.has(id)) continue; ids.add(id);
-    const cat = CAT[o.category] ? o.category : null;
+    const cat = CAT[o.category] ? o.category : (o.category.trim() ? addCategory(o.category) : null);
     txns.push({id, amount, date: o.date, time: o.time, shop: o.shop || 'Unknown', category: cat, needsReview: !cat, type: o.type || 'Bank', note: o.note, ref: o.ref, source: o.source || 'csv', raw: o.raw, added: Date.now()});
     n++;
   }
