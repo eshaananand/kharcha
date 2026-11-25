@@ -33,7 +33,7 @@ This runs silently each time a debit SMS arrives:
    - Select **Run Immediately** and turn off **Notify When Run**. Tap **Next**.
 3. Tap **New Blank Automation** and add these actions:
    1. **Text**. Inside it, insert the variable **Shortcut Input → Content**, press return, then type `---`.
-   2. **Append to Text File**. Set it to append the **Text** from step 1 to the file path `Shortcuts/kharcha-inbox.txt`, with **Make New Line** on.
+   2. **Append to Text File**. Set it to append the **Text** from step 1. Leave the folder as **Shortcuts** and type the file path `kharcha-inbox.txt` (just the name, the folder is already Shortcuts). Turn **Make New Line** on.
 4. Tap **Done**.
 
 > Some banks say "Sent Rs…" or "spent" instead of "debited". Make a second automation with **Message Contains: `Sent Rs`** (and one for `spent` if needed) using the same actions.
