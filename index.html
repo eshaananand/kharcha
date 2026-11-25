@@ -350,14 +350,19 @@ function parseType(low){
   if (/\bneft\b|\bimps\b|\brtgs\b/.test(low)) return 'Transfer';
   return 'Bank';
 }
-function hasWord(text, w){ return (' ' + text + ' ').includes(w.length <= 3 ? ' ' + w + ' ' : w); }
+// Shop names: loose match ("swiggyinstamart" contains "swiggy").
+// Whole SMS text: whole words only, so "credit card" doesn't match "cred".
+function hasWord(text, w, whole){
+  if (whole) return new RegExp('(^|[^a-z0-9])' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9])').test(text);
+  return (' ' + text + ' ').includes(w.length <= 3 ? ' ' + w + ' ' : w);
+}
 function guessCategory(shop, low){
   const key = shopKey(shop);
   if (key && rules[key]) return rules[key];
   const s = (shop || '').toLowerCase().replace(/[^a-z0-9.@ ]/g, ' ');
   for (const [cat, words] of Object.entries(KEYWORDS)) if (words.some(w => hasWord(s, w))) return cat;
   const lw = low.replace(/[^a-z0-9.@ ]/g, ' ');
-  for (const cat of ['Investment', 'Rent', 'Bills']) if (KEYWORDS[cat].some(w => hasWord(lw, w))) return cat;
+  for (const cat of ['Investment', 'Rent', 'Bills']) if (KEYWORDS[cat].some(w => hasWord(lw, w, true))) return cat;
   return null;
 }
 
