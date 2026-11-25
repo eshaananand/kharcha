@@ -184,6 +184,8 @@ nav.tabs .i{font-size:21px;line-height:1.1}
       </div>
       <div class="btns"><button class="btn danger" id="clearAll">Delete all data</button></div>
     </div>
+
+    <div class="row between small muted" style="padding:4px 4px 12px"><span id="appVersion"></span><button class="btn ghost" id="checkUpdate" style="padding:6px 10px;font-size:13px">Check for updates</button></div>
   </section>
 </main>
 
@@ -713,7 +715,32 @@ $('#clearAll').onclick = () => {
 };
 
 render();
-if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+/* ---------- Updates ---------- */
+// Bump APP_VERSION with every release. When the app is opened or brought back
+// from the background it checks GitHub; if a newer version is there it reloads.
+const APP_VERSION = 7;
+$('#appVersion').textContent = 'Version ' + APP_VERSION;
+let swReg = null;
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')){
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js', {updateViaCache: 'none'}).then(r => swReg = r).catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !checkForUpdate.reloading){ checkForUpdate.reloading = true; location.reload(); } });
+}
+async function checkForUpdate(){
+  if (!navigator.onLine || !location.protocol.startsWith('http')) return;
+  try {
+    swReg && swReg.update();
+    const html = await (await fetch('index.html?v=' + Date.now(), {cache: 'no-store'})).text();
+    const m = html.match(/const APP_VERSION = (\d+);/);
+    if (m && +m[1] > APP_VERSION && !checkForUpdate.reloading){
+      checkForUpdate.reloading = true; toast('Updating to the latest version…');
+      setTimeout(() => location.reload(), 600);
+    }
+  } catch(e){}
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); });
+window.addEventListener('pageshow', checkForUpdate);
+$('#checkUpdate').onclick = () => { toast('Checking for updates…'); checkForUpdate().then(() => setTimeout(() => { if (!checkForUpdate.reloading) toast('You have the latest version'); }, 400)); };
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 </script>
 </body>
