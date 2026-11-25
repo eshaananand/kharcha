@@ -338,15 +338,36 @@ function parseSMS(raw){
   }};
 }
 
+// A line that on its own looks like a full payment SMS (money word + amount).
+const START_RE = /\b(debited|spent|sent|withdrawn|deducted|credited)\b/i;
+const AMT_RE = /(?:rs\.?|inr|₹)\s*[\d,]+|(?:debited|spent|sent)\s+(?:by|for|of|with)?\s*[\d,]+/i;
 function splitMessages(text){
-  return text.replace(/\r/g, '').split(/\n\s*-{3,}\s*\n|\n\s*\n|^\s*-{3,}\s*$/m).map(s => s.replace(/^\s*-{3,}\s*$/gm, '').trim()).filter(Boolean);
+  const chunks = text.replace(/\r/g, '').split(/\n\s*-{3,}\s*\n|\n\s*\n|^\s*-{3,}\s*$/m)
+    .map(s => s.replace(/^\s*-{3,}\s*$/gm, '').trim()).filter(Boolean);
+  // If several SMS ended up on back-to-back lines (no separator), split them apart.
+  // Multi-line SMS (e.g. "Sent Rs.40 / From A/C / To SHOP / On date") stay together,
+  // because only their first line has both a money word and an amount.
+  const out = [];
+  for (const chunk of chunks){
+    let cur = [], curHasStart = false;
+    for (const line of chunk.split('\n')){
+      const isStart = START_RE.test(line) && AMT_RE.test(line);
+      if (isStart && curHasStart){ out.push(cur.join('\n').trim()); cur = []; curHasStart = false; }
+      cur.push(line); if (isStart) curHasStart = true;
+    }
+    if (cur.join('').trim()) out.push(cur.join('\n').trim());
+  }
+  return out;
 }
 function addFromText(text){
   const res = {added: [], dup: 0, skipped: []};
   const ids = new Set(txns.map(x => x.id));
+  const seen = {};   // same SMS text appearing twice in one file = two real payments
   for (const msg of splitMessages(text)){
     const p = parseSMS(msg); if (!p) continue;
     if (p.skip){ res.skipped.push({msg, why: p.skip}); continue; }
+    const n = seen[p.txn.id] = (seen[p.txn.id] || 0) + 1;
+    if (n > 1) p.txn.id += '_' + n;
     if (ids.has(p.txn.id)){ res.dup++; continue; }
     ids.add(p.txn.id); txns.push(p.txn); res.added.push(p.txn);
   }
