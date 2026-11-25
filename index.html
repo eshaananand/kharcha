@@ -150,13 +150,17 @@ nav.tabs .i{font-size:21px;line-height:1.1}
     </div>
 
     <div class="card">
-      <h2>Add cash / manual expense</h2>
+      <h2>Add expense by hand</h2>
+      <p class="small muted" style="margin:-4px 0 4px">Cash, credit card, or anything the SMS didn't catch.</p>
       <div class="two">
         <div><label>Amount (₹)</label><input id="mAmt" type="number" inputmode="decimal" placeholder="0"></div>
         <div><label>Date</label><input id="mDate" type="date"></div>
       </div>
       <label>What for</label><input id="mName" placeholder="e.g. Auto rickshaw, chai">
-      <label>Category</label><select id="mCat"></select>
+      <div class="two">
+        <div><label>Category</label><select id="mCat"></select></div>
+        <div><label>Paid with</label><select id="mVia"><option>Cash</option><option>Credit card</option><option>Debit card</option><option>UPI</option><option>Net banking</option><option>Other</option></select></div>
+      </div>
       <button class="btn full" style="margin-top:12px" id="mAdd">Add expense</button>
     </div>
 
@@ -203,7 +207,10 @@ nav.tabs .i{font-size:21px;line-height:1.1}
       <div><label>Date</label><input id="sDate" type="date"></div>
       <div><label>Time</label><input id="sTime" type="time"></div>
     </div>
-    <label>Note</label><input id="sNote" placeholder="Optional">
+    <div class="two">
+      <div><label>Paid with</label><select id="sVia"></select></div>
+      <div><label>Note</label><input id="sNote" placeholder="Optional"></div>
+    </div>
     <label class="check"><input type="checkbox" id="sRemember" checked> Always use this category for this shop</label>
     <div class="sms" id="sRaw"></div>
     <div class="btns">
@@ -361,7 +368,7 @@ function parseSMS(raw){
   const low = t.toLowerCase();
   if (/\botp\b|one[\s-]time password|verification code/.test(low)) return {skip: 'OTP message'};
   if (/will be (debited|deducted|charged)|is due|due on|due date|scheduled|upcoming|reminder/.test(low)) return {skip: 'Upcoming / reminder (not paid yet)'};
-  const strongDebit = /\b(debited|spent|sent|withdrawn|deducted)\b/.test(low);
+  const strongDebit = /\b(debited|spent|sent|withdrawn|deducted|charged|used for|used at)\b/.test(low);
   const anyDebit = strongDebit || /\b(debit|paid|purchase|txn of|transaction of)\b/.test(low);
   if (!anyDebit) return {skip: /\b(credited|received|deposited|refund)/.test(low) ? 'Money received (credit)' : 'Not a debit message'};
   if (/\b(credited|received|deposited|refunded)\b/.test(low) && !strongDebit) return {skip: 'Money received (credit)'};
@@ -410,8 +417,9 @@ function addFromText(text){
   for (const msg of splitMessages(text)){
     const p = parseSMS(msg); if (!p) continue;
     if (p.skip){ res.skipped.push({msg, why: p.skip}); continue; }
-    const n = seen[p.txn.id] = (seen[p.txn.id] || 0) + 1;
-    if (n > 1) p.txn.id += '_' + n;
+    // Same bank ref number = same payment (e.g. two Shortcut words both saved this SMS).
+    // Same text with no ref = could be two real identical payments, so count each one.
+    if (!p.txn.ref){ const n = seen[p.txn.id] = (seen[p.txn.id] || 0) + 1; if (n > 1) p.txn.id += '_' + n; }
     if (ids.has(p.txn.id)){ res.dup++; continue; }
     ids.add(p.txn.id); txns.push(p.txn); res.added.push(p.txn);
   }
@@ -530,6 +538,9 @@ function openSheet(id){
   editingId = id;
   $('#sAmt').value = x.amount; $('#sName').value = x.shop; $('#sDate').value = x.date; $('#sTime').value = x.time || '';
   $('#sNote').value = x.note || ''; $('#sCat').value = x.category || 'Others';
+  const via = $('#sVia'); via.innerHTML = ['Cash','Credit card','Debit card','UPI','Card','AutoPay','ATM','Transfer','Net banking','Bank','Other'].map(o => `<option>${o}</option>`).join('');
+  if (![...via.options].some(o => o.value === x.type)) via.add(new Option(x.type, x.type));
+  via.value = x.type;
   $('#sRaw').textContent = x.raw || 'Added by hand'; $('#sRaw').style.display = 'block';
   $('#sheetBg').classList.add('on');
 }
@@ -649,7 +660,7 @@ $('#mDate').value = todayISO();
 $('#mAdd').onclick = () => {
   const amount = parseFloat($('#mAmt').value);
   if (!(amount > 0)) return toast('Enter an amount');
-  txns.push({id: 'm' + Date.now() + Math.random().toString(36).slice(2, 6), amount, shop: $('#mName').value.trim() || 'Cash', date: $('#mDate').value || todayISO(), time: '', type: 'Cash', category: $('#mCat').value, needsReview: false, note: '', raw: '', ref: '', source: 'manual', added: Date.now()});
+  txns.push({id: 'm' + Date.now() + Math.random().toString(36).slice(2, 6), amount, shop: $('#mName').value.trim() || $('#mVia').value, date: $('#mDate').value || todayISO(), time: '', type: $('#mVia').value, category: $('#mCat').value, needsReview: false, note: '', raw: '', ref: '', source: 'manual', added: Date.now()});
   save(); render(); $('#mAmt').value = ''; $('#mName').value = ''; toast('Expense added');
 };
 
@@ -658,7 +669,7 @@ $('#sheetBg').onclick = e => { if (e.target.id === 'sheetBg') closeSheet(); };
 $('#sSave').onclick = () => {
   const x = txns.find(t => t.id === editingId); if (!x) return;
   const amt = parseFloat($('#sAmt').value); if (amt > 0) x.amount = amt;
-  x.shop = $('#sName').value.trim() || x.shop; x.date = $('#sDate').value || x.date; x.time = $('#sTime').value; x.note = $('#sNote').value.trim();
+  x.shop = $('#sName').value.trim() || x.shop; x.date = $('#sDate').value || x.date; x.time = $('#sTime').value; x.note = $('#sNote').value.trim(); x.type = $('#sVia').value || x.type;
   setCategory(x.id, $('#sCat').value, $('#sRemember').checked);
   save(); closeSheet(); render(); toast('Saved');
 };
