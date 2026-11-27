@@ -1,0 +1,11 @@
+name = "kharcha-mailbox"
+main = "src/index.js"
+compatibility_date = "2025-10-01"
+
+[vars]
+# Only these websites may talk to the mailbox from a browser.
+ALLOWED_ORIGINS = "https://eshaananand.github.io,http://localhost:8765"
+
+[[kv_namespaces]]
+binding = "INBOX"
+id = "REPLACE_WITH_KV_ID"

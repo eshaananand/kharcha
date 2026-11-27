@@ -1,6 +1,6 @@
 // Network-first, skipping the browser's HTTP cache, so a new version shows
 // up as soon as it's on GitHub. Falls back to the saved copy when offline.
-const CACHE = 'kharcha-v7';
+const CACHE = 'kharcha-v8';
 const SHELL = ['./', './index.html', './manifest.json', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, {cache: 'reload'})))));

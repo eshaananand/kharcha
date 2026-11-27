@@ -109,6 +109,9 @@ nav.tabs .i{font-size:21px;line-height:1.1}
         <div class="stat"><div class="v" id="tCount">0</div><div class="l">Payments</div></div>
       </div>
     </div>
+    <div class="row between small muted" id="syncLine" style="display:none;margin:-4px 4px 12px">
+      <span id="syncText"></span><button class="btn ghost" id="syncNowHome" style="padding:5px 10px;font-size:13px">🔄 Sync</button>
+    </div>
     <div class="card" id="reviewNudge" style="display:none;background:var(--warn-soft);border-color:transparent;cursor:pointer">
       <div class="row between"><div><b id="nudgeText"></b><div class="small muted">Tap to choose a category</div></div><div style="font-size:22px">›</div></div>
     </div>
@@ -142,8 +145,25 @@ nav.tabs .i{font-size:21px;line-height:1.1}
       <div class="result" id="smsResult"></div>
     </div>
 
+    <div class="card" id="autoSyncCard">
+      <h2>Auto-sync</h2>
+      <div id="syncOff">
+        <p class="small muted" style="margin:0 0 8px">New bank SMS arrive by themselves from your private Cloudflare mailbox. Paste the setup code you were given.</p>
+        <input id="setupCode" placeholder="kharcha:https://…#…" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <button class="btn full" style="margin-top:8px" id="syncEnable">Turn on auto-sync</button>
+      </div>
+      <div id="syncOn" style="display:none">
+        <div class="small" id="syncStatus"></div>
+        <div class="btns">
+          <button class="btn" id="syncNow">🔄 Sync now</button>
+          <button class="btn ghost" id="syncDisable">Turn off</button>
+        </div>
+        <p class="small muted" style="margin:8px 0 0">🔒 Messages are locked with a key that exists only on this phone, and deleted from the mailbox once picked up.</p>
+      </div>
+    </div>
+
     <div class="card">
-      <h2>Sync from iPhone Shortcut</h2>
+      <h2>Sync from iPhone Shortcut (manual backup)</h2>
       <p class="small muted" style="margin:0 0 8px">Pick the <b>kharcha-inbox.txt</b> file your Shortcut saves bank SMS into. Already-added messages are skipped automatically.</p>
       <label class="btn full" style="margin:0">📥 Choose inbox file<input type="file" id="syncFile" accept=".txt,text/plain" hidden></label>
       <div class="result" id="syncResult"></div>
@@ -715,10 +735,102 @@ $('#clearAll').onclick = () => {
 };
 
 render();
+/* ---------- Auto-sync (Cloudflare mailbox) ---------- */
+let sync = store.get('kh_sync', null);   // {url, token, priv: JWK, last, lastError}
+let syncing = false;
+const b64d = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+function parseSetup(code){
+  const m = (code || '').trim().match(/^kharcha:(https:\/\/[^\s#]+?|http:\/\/localhost:\d+)\/*#([A-Za-z0-9_-]{16,})$/);
+  return m ? {url: m[1], token: m[2]} : null;
+}
+async function api(path, opts = {}){
+  const headers = {'Authorization': 'Bearer ' + sync.token};
+  if (opts.body) headers['Content-Type'] = 'application/json';
+  const r = await fetch(sync.url + path, {...opts, headers, cache: 'no-store'});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+  return j;
+}
+async function enableSync(code){
+  const cfg = parseSetup(code);
+  if (!cfg) throw new Error('That setup code doesn’t look right');
+  const kp = await crypto.subtle.generateKey({name: 'RSA-OAEP', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256'}, true, ['encrypt', 'decrypt']);
+  const pub = await crypto.subtle.exportKey('jwk', kp.publicKey);
+  const priv = await crypto.subtle.exportKey('jwk', kp.privateKey);
+  const prev = sync; sync = {...cfg, priv};
+  try { await api('/key', {method: 'POST', body: JSON.stringify({publicKey: pub})}); }
+  catch(e){ sync = prev; throw e; }
+  store.set('kh_sync', sync);
+}
+async function decryptMsg(priv, m){
+  const raw = await crypto.subtle.decrypt({name: 'RSA-OAEP'}, priv, b64d(m.wk));
+  const aes = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
+  return new TextDecoder().decode(await crypto.subtle.decrypt({name: 'AES-GCM', iv: b64d(m.iv)}, aes, b64d(m.ct)));
+}
+async function pullSync(manual){
+  if (!sync || syncing) return;
+  if (!navigator.onLine){ if (manual) toast('No internet right now'); return; }
+  syncing = true; renderSync();
+  try {
+    const {messages = []} = await api('/sms');
+    const texts = [], ids = []; let bad = 0;
+    if (messages.length){
+      const priv = await crypto.subtle.importKey('jwk', sync.priv, {name: 'RSA-OAEP', hash: 'SHA-256'}, false, ['decrypt']);
+      for (const m of messages){
+        try { texts.push(await decryptMsg(priv, m)); } catch(e){ bad++; }
+        ids.push(m.id);
+      }
+    }
+    const res = texts.length ? addFromText(texts.join('\n---\n')) : {added: [], dup: 0, skipped: []};
+    // Saved on the phone first, then tell the mailbox to delete them.
+    if (ids.length) await api('/ack', {method: 'POST', body: JSON.stringify({ids})});
+    sync.last = Date.now(); sync.lastError = ''; store.set('kh_sync', sync);
+    const n = res.added.length;
+    if (n) toast(`✅ ${n} new payment${n === 1 ? '' : 's'} synced`);
+    else if (manual) toast(bad ? `${bad} message${bad === 1 ? '' : 's'} couldn’t be unlocked` : 'All caught up — nothing new');
+  } catch(e){
+    sync.lastError = e.message; store.set('kh_sync', sync);
+    if (manual) toast('Sync failed: ' + e.message);
+  } finally { syncing = false; renderSync(); }
+}
+function ago(t){
+  if (!t) return 'never';
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return 'just now'; if (m < 60) return m + ' min ago';
+  const h = Math.round(m / 60); if (h < 24) return h + ' h ago';
+  return Math.round(h / 24) + ' days ago';
+}
+function renderSync(){
+  $('#syncOff').style.display = sync ? 'none' : 'block';
+  $('#syncOn').style.display = sync ? 'block' : 'none';
+  $('#syncLine').style.display = sync ? 'flex' : 'none';
+  if (!sync) return;
+  const status = syncing ? 'Syncing…' : sync.lastError ? '⚠️ ' + sync.lastError : 'Auto-sync on · checked ' + ago(sync.last);
+  $('#syncText').textContent = status;
+  $('#syncStatus').textContent = status;
+}
+$('#syncEnable').onclick = async () => {
+  const b = $('#syncEnable'); b.disabled = true; b.textContent = 'Connecting…';
+  try { await enableSync($('#setupCode').value); $('#setupCode').value = ''; toast('Auto-sync is on 🎉'); await pullSync(false); }
+  catch(e){ toast(e.message); }
+  finally { b.disabled = false; b.textContent = 'Turn on auto-sync'; renderSync(); }
+};
+$('#syncNow').onclick = () => pullSync(true);
+$('#syncNowHome').onclick = () => pullSync(true);
+$('#syncDisable').onclick = () => {
+  if (!confirm('Turn off auto-sync on this phone? Messages already synced stay. To turn it on again you’ll need the setup code.')) return;
+  sync = null; try { localStorage.removeItem('kh_sync'); } catch(e){}
+  renderSync(); toast('Auto-sync turned off');
+};
+renderSync();
+pullSync(false);
+setInterval(() => { if (document.visibilityState === 'visible') pullSync(false); }, 2 * 60 * 1000);
+setInterval(renderSync, 30 * 1000);
+
 /* ---------- Updates ---------- */
 // Bump APP_VERSION with every release. When the app is opened or brought back
 // from the background it checks GitHub; if a newer version is there it reloads.
-const APP_VERSION = 7;
+const APP_VERSION = 8;
 $('#appVersion').textContent = 'Version ' + APP_VERSION;
 let swReg = null;
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')){
@@ -738,7 +850,7 @@ async function checkForUpdate(){
     }
   } catch(e){}
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible'){ checkForUpdate(); pullSync(false); } });
 window.addEventListener('pageshow', checkForUpdate);
 $('#checkUpdate').onclick = () => { toast('Checking for updates…'); checkForUpdate().then(() => setTimeout(() => { if (!checkForUpdate.reloading) toast('You have the latest version'); }, 400)); };
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
